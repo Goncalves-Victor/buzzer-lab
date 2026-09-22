@@ -47,6 +47,9 @@ export interface SongController {
   insertRelativeToSelection: (event: SongEvent, position: 'before' | 'after') => void;
   updateSelected: (patch: Partial<Omit<SongEvent, 'id'>>) => void;
   deleteSelected: () => void;
+  /** Apaga um evento especifico por id, deslocando o resto da musica. Usado
+   * pelo Piano Roll no botao "Apagar e puxar o resto". */
+  deleteById: (id: string) => void;
   duplicateSelected: () => void;
   moveSelected: (direction: -1 | 1) => void;
   moveByDrag: (fromIndex: number, toIndex: number) => void;
@@ -143,6 +146,20 @@ export function useSong(initial: SongEvent[] = []): SongController {
     setSelectedId(nextIndex >= 0 ? remaining[nextIndex].id : null);
   }, [events, history, selectedId]);
 
+  const deleteById = useCallback(
+    (id: string) => {
+      const index = indexOfId(events, id);
+      if (index < 0) return;
+      history.commit((current) => removeEvent(current, id));
+      if (id === selectedId) {
+        const remaining = events.filter((e) => e.id !== id);
+        const nextIndex = Math.min(index, remaining.length - 1);
+        setSelectedId(nextIndex >= 0 ? remaining[nextIndex].id : null);
+      }
+    },
+    [events, history, selectedId],
+  );
+
   const duplicateSelected = useCallback(() => {
     if (!selectedId) return;
     history.commit((current) => duplicateEvent(current, selectedId));
@@ -179,6 +196,7 @@ export function useSong(initial: SongEvent[] = []): SongController {
     insertRelativeToSelection,
     updateSelected,
     deleteSelected,
+    deleteById,
     duplicateSelected,
     moveSelected,
     moveByDrag,

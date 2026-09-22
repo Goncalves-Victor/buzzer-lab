@@ -33,6 +33,7 @@ import { HelpPanel } from './components/HelpPanel';
 import { ImportModal } from './components/ImportModal';
 import { NoteEditor } from './components/NoteEditor';
 import { Piano } from './components/Piano';
+import { PianoRoll } from './components/PianoRoll';
 import { QuantizeModal } from './components/QuantizeModal';
 import { SettingsModal } from './components/SettingsModal';
 import { Timeline } from './components/Timeline';
@@ -48,6 +49,7 @@ export default function App() {
   const [songName, setSongName] = useState(DEFAULT_SONG_NAME);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [openModal, setOpenModal] = useState<ModalName>(null);
+  const [editMode, setEditMode] = useState<'blocks' | 'grid'>('blocks');
 
   const [playerState, setPlayerState] = useState<PlayerState>('stopped');
   const [playingIndex, setPlayingIndex] = useState(-1);
@@ -126,8 +128,16 @@ export default function App() {
     writeJson(STORAGE_KEYS.songName, songName);
   }, [songName]);
 
+  // Mesmo problema do autosave da musica: no primeiro disparo (montagem),
+  // "settings" ainda e o valor padrao (useState inicial), porque o efeito de
+  // hidratacao acima so troca o estado de verdade depois — e o React roda os
+  // efeitos duas vezes na montagem em modo de desenvolvimento (StrictMode).
+  // Sem essa guarda, esse primeiro disparo grava o BPM padrao (120) por cima
+  // do que estava salvo, e a segunda leitura da hidratacao ja pega esse valor
+  // errado: o controle de BPM "esquecia" o valor escolhido ao recarregar a
+  // pagina.
+  const skipSettingsSave = useRef(true);
   useEffect(() => {
-    saveSettings(settings);
     engine.setVolume(settings.volume);
     recorder.setOptions({
       autoRests: settings.autoRests,
@@ -135,6 +145,11 @@ export default function App() {
       minNoteMs: DEFAULT_RECORDER_OPTIONS.minNoteMs,
     });
     metronome.setBpm(settings.bpm);
+    if (skipSettingsSave.current) {
+      skipSettingsSave.current = false;
+      return;
+    }
+    saveSettings(settings);
   }, [settings, engine, recorder, metronome]);
 
   // ---- Limpeza geral ao desmontar ---------------------------------------
@@ -265,24 +280,36 @@ export default function App() {
   );
 
   // ---- Metronomo ---------------------------------------------------------
-  const toggleMetronome = useCallback(() => {
-    setMetronomeOn((current) => {
-      const next = !current;
-      if (next) {
-        void engine.unlock().then(() => {
-          metronome.setBpm(settings.bpm);
-          metronome.start();
-        });
-      } else {
-        metronome.stop();
-      }
-      return next;
-    });
-  }, [engine, metronome, settings.bpm]);
+  // engine.unlock() e assincrono (as vezes leva um tempinho para o
+  // AudioContext ficar "running"). Antes, o botao marcava "ligado" na hora e
+  // so tentava tocar o clique depois — se o unlock demorasse ou falhasse,
+  // Metronome.start() desistia em silencio (guarda isReady) e a interface
+  // ficava mostrando "ligado" para sempre sem nenhum som. Agora so marcamos
+  // o estado como ligado depois que o start() realmente rodou.
+  /** Reflete o que o usuario pediu por ultimo, para o unlock() atrasado nao
+   * ligar o metronomo depois que o usuario ja desistiu e desligou de novo. */
+  const metronomeWantedRef = useRef(false);
 
-  useEffect(() => {
-    metronome.setBpm(settings.bpm);
-  }, [metronome, settings.bpm]);
+  const toggleMetronome = useCallback(() => {
+    if (metronomeOn) {
+      metronomeWantedRef.current = false;
+      metronome.stop();
+      setMetronomeOn(false);
+      return;
+    }
+    metronomeWantedRef.current = true;
+    void engine.unlock().then((ready) => {
+      if (!metronomeWantedRef.current) return;
+      if (!ready) {
+        metronomeWantedRef.current = false;
+        setToast('Não foi possível ativar o áudio do metrônomo. Toque em uma tecla e tente de novo.');
+        return;
+      }
+      metronome.setBpm(settings.bpm);
+      metronome.start();
+      setMetronomeOn(true);
+    });
+  }, [engine, metronome, metronomeOn, settings.bpm]);
 
   // ---- Acoes da musica ---------------------------------------------------
   const loadSong = useCallback(
@@ -440,26 +467,67 @@ export default function App() {
           onVolumeChange={(volume) => updateSettings({ volume })}
         />
 
-        <Timeline
-          events={song.events}
-          selectedId={song.selectedId}
-          selectedIndex={song.selectedIndex}
-          playingIndex={playingIndex}
-          onSelect={song.select}
-          onAddRest={() => song.addRest()}
-          onDelete={song.deleteSelected}
-          onDuplicate={song.duplicateSelected}
-          onMove={song.moveSelected}
-          onInsertBefore={() =>
-            song.insertRelativeToSelection(createRestEvent(settings.quantizeStep), 'before')
-          }
-          onInsertAfter={() =>
-            song.insertRelativeToSelection(createRestEvent(settings.quantizeStep), 'after')
-          }
-          onReorder={song.moveByDrag}
-          onClear={handleClearTimeline}
-          onQuantize={() => setOpenModal('quantize')}
-        />
+        <div className="edit-mode-bar">
+          <span className="field-label">Como editar</span>
+          <div className="segmented">
+            <button
+              type="button"
+              className={`segmented-btn${editMode === 'blocks' ? ' is-on' : ''}`}
+              onClick={() => setEditMode('blocks')}
+            >
+              Blocos
+            </button>
+            <button
+              type="button"
+              className={`segmented-btn${editMode === 'grid' ? ' is-on' : ''}`}
+              onClick={() => setEditMode('grid')}
+            >
+              Grade
+            </button>
+          </div>
+        </div>
+
+        {editMode === 'grid' ? (
+          <PianoRoll
+            events={song.events}
+            selectedId={song.selectedId}
+            playingIndex={playingIndex}
+            onCommit={song.setEvents}
+            onSelect={song.select}
+            onDeleteAndShift={song.deleteById}
+            onPreview={(frequency, duration) => {
+              void engine.unlock().then(() => {
+                engine.noteOn(frequency);
+                if (previewTimerRef.current !== null) window.clearTimeout(previewTimerRef.current);
+                previewTimerRef.current = window.setTimeout(() => {
+                  engine.noteOff();
+                  previewTimerRef.current = null;
+                }, duration);
+              });
+            }}
+          />
+        ) : (
+          <Timeline
+            events={song.events}
+            selectedId={song.selectedId}
+            selectedIndex={song.selectedIndex}
+            playingIndex={playingIndex}
+            onSelect={song.select}
+            onAddRest={() => song.addRest()}
+            onDelete={song.deleteSelected}
+            onDuplicate={song.duplicateSelected}
+            onMove={song.moveSelected}
+            onInsertBefore={() =>
+              song.insertRelativeToSelection(createRestEvent(settings.quantizeStep), 'before')
+            }
+            onInsertAfter={() =>
+              song.insertRelativeToSelection(createRestEvent(settings.quantizeStep), 'after')
+            }
+            onReorder={song.moveByDrag}
+            onClear={handleClearTimeline}
+            onQuantize={() => setOpenModal('quantize')}
+          />
+        )}
 
         <div className="bottom-grid">
           <NoteEditor

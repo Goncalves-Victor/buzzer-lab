@@ -77,6 +77,7 @@ src/
 │   ├── TransportControls.tsx
 │   ├── Timeline.tsx
 │   ├── TimelineEvent.tsx
+│   ├── PianoRoll.tsx    modo "Grade": segunda forma de editar o mesmo SongEvent[]
 │   ├── NoteEditor.tsx
 │   ├── CodePanel.tsx
 │   ├── ImportModal.tsx
@@ -98,7 +99,8 @@ src/
 │   ├── songTypes.ts     SongEvent e constantes
 │   ├── songUtils.ts     operações puras sobre SongEvent[]
 │   ├── recorder.ts      note-on/note-off → SongEvent[]
-│   └── quantize.ts      "Ajustar tempos"
+│   ├── quantize.ts      "Ajustar tempos"
+│   └── gridEdit.ts      operações do Piano Roll (criar/mover/redimensionar/apagar na grade)
 │
 ├── data/                dados e persistência
 │   ├── examples.ts      melodias prontas
@@ -342,7 +344,82 @@ npx tsc --noEmit
 npm run build
 ```
 
-## 20. Prioridades
+## 20. Piano Roll ("Grade")
+
+Segunda forma de editar a **mesma** música da Timeline. `App.tsx` guarda
+`editMode: 'blocks' | 'grid'` (não persistido; sempre abre em "Blocos") e um
+botão "Blocos / Grade" alterna qual componente aparece — `Timeline` ou
+`PianoRoll` — os dois lendo e escrevendo o mesmíssimo `song` (`useSong`).
+**Não existe uma segunda fonte de verdade**: o Piano Roll não guarda cópia
+nenhuma da música, só descreve qual operação de `music/gridEdit.ts` deve
+rodar em cima do `SongEvent[]` recebido por prop.
+
+### O problema: posição livre sobre um modelo sem posição
+
+`SongEvent[]` é **sequencial**: cada evento começa exatamente onde o anterior
+termina (ver `songUtils.startTimes`). Não existe `x`/tempo absoluto guardado
+em lugar nenhum — e isso continua valendo depois desta feature, porque a
+Timeline, a exportação e a importação já confiam nesse formato. Mas o Piano
+Roll precisa parecer uma grade onde o aluno arrasta notas livremente pelo
+tempo. `music/gridEdit.ts` resolve isso convertendo cada gesto em uma
+reescrita do array sequencial:
+
+- **Criar** (`insertNoteAt`): acha em que evento um instante em ms cai
+  (`locate`); se for um silêncio, divide esse silêncio em até três pedaços
+  (sobra-antes / nota nova / sobra-depois); se cair em cima de uma nota,
+  devolve o array sem alteração (o chamador reconhece isso comparando a
+  referência do array de volta com `===` e não faz nada).
+- **Mover** (`moveNote`): primeiro **libera** o espaço antigo da nota (vira
+  silêncio e se funde com os vizinhos, `removeAsRest` +
+  `mergeAdjacentRests`), depois **insere de novo** a mesma nota (mesmo `id`,
+  para a seleção não se perder no meio do arrasto) no novo instante, dividindo
+  o silêncio que estiver lá. Se o destino estiver ocupado ou não couber nem o
+  mínimo (`MIN_GRID_DURATION`), a inserção falha e a função devolve a música
+  **original** sem a liberação: o arrasto é cancelado, a nota volta pro
+  lugar.
+- **Redimensionar** (`resizeNote`): muda só a duração da própria nota,
+  comendo (ou devolvendo) tempo do silêncio que vem logo depois dela. Nunca
+  ultrapassa a duração desse silêncio — ou seja, nunca alcança a próxima
+  nota. **É isso que garante o buzzer monofônico sem nenhuma verificação de
+  sobreposição à parte**: mover e redimensionar simplesmente não têm como
+  produzir uma sobreposição, dado como são escritos.
+
+Como não existe posição absoluta, "arrastar livremente" é sempre, por baixo
+dos panos, uma sequência de "vira silêncio aqui" + "encaixa ali" — a ilusão
+de grade livre é só a soma dessas duas operações sobre a lista sequencial.
+
+### Apagar: dois comportamentos
+
+- **"🗑 Apagar (vira silêncio)"** — `removeAsRest`: troca a nota por um
+  silêncio do mesmo tamanho no mesmo lugar; o resto da música não se move.
+  É o padrão, porque é o que um piano roll normalmente faz.
+- **"⇤ Apagar e puxar o resto"** — reaproveita `song.deleteById`
+  (`songUtils.removeEvent`), a mesma remoção "de verdade" que a Timeline já
+  usa: some com o evento e desloca tudo que vem depois para mais cedo.
+  Também acessível por **duplo clique** na nota, para ser rápido sem exigir
+  precisão em cima do botão.
+
+### Arrasto sem poluir o desfazer
+
+Durante o arrasto (mover ou redimensionar), o Piano Roll mantém uma cópia de
+trabalho num `useRef` (`draftRef`) e só chama `onCommit` (que vira um ponto
+no histórico de desfazer) no `pointerup`. Cada `pointermove` só atualiza o
+ref e força um re-render local (`forceRender`) para o retângulo acompanhar o
+ponteiro — nenhum commit no meio do caminho, senão um arrasto de meio
+segundo geraria dezenas de passos de desfazer.
+
+### Piano vertical e o eixo do tempo
+
+As linhas da grade são `PIANO_NOTES` (mesma faixa C3–C6 do piano horizontal)
+**invertidas**, para o grave ficar embaixo e o agudo em cima, como a maioria
+das ferramentas de piano roll. O eixo horizontal é `tempo em ms × PX_PER_MS`
+(pixels por milissegundo); o "Encaixe" reaproveita os mesmos
+`QUANTIZE_STEPS` de `songTypes.ts`. Não há campo de "duração total da
+música": a duração continua sendo simplesmente a soma dos eventos, calculada
+onde já era (`songUtils.totalDuration`), a mesma conta que a Timeline e o
+`CodePanel` usam.
+
+## 21. Prioridades
 
 1. funcionamento correto + simplicidade + fidelidade ao buzzer;
 2. experiência de edição;
