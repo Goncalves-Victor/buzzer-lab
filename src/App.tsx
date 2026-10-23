@@ -16,15 +16,14 @@ import type { PlayerState } from './audio/player';
 
 import { DEFAULT_RECORDER_OPTIONS, Recorder } from './music/recorder';
 import type { NoteInfo } from './music/notes';
-import type { SongEvent, StoredSong } from './music/songTypes';
+import type { SongEvent } from './music/songTypes';
 import { createRestEvent, sanitizeEvents } from './music/songUtils';
 
-import { localSongRepository } from './data/customSongs';
-import { localPlaylistRepository } from './data/playlist';
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from './data/settings';
 import type { Settings } from './data/settings';
 import { STORAGE_KEYS, readJson, writeJson } from './data/storage';
 
+import { useLibrary } from './state/useLibrary';
 import { useSong } from './state/useSong';
 
 import { CodePanel } from './components/CodePanel';
@@ -37,6 +36,7 @@ import { NoteEditor } from './components/NoteEditor';
 import { Piano } from './components/Piano';
 import { PianoRoll } from './components/PianoRoll';
 import { PlaylistModal } from './components/PlaylistModal';
+import { ProfileField } from './components/ProfileField';
 import { QuantizeModal } from './components/QuantizeModal';
 import { SettingsModal } from './components/SettingsModal';
 import { Timeline } from './components/Timeline';
@@ -70,8 +70,8 @@ export default function App() {
   const [recordElapsed, setRecordElapsed] = useState(0);
 
   const [metronomeOn, setMetronomeOn] = useState(false);
-  const [customSongs, setCustomSongs] = useState<StoredSong[]>([]);
-  const [playlist, setPlaylist] = useState<StoredSong[]>([]);
+  const library = useLibrary();
+  const { customSongs, playlist } = library;
   const [exportMode, setExportMode] = useState<ExportMode>('song');
   const [toast, setToast] = useState<string | null>(null);
 
@@ -115,8 +115,6 @@ export default function App() {
     const storedName = readJson<string>(STORAGE_KEYS.songName, DEFAULT_SONG_NAME);
     if (typeof storedName === 'string' && storedName.trim()) setSongName(storedName);
 
-    setCustomSongs(localSongRepository.list());
-    setPlaylist(localPlaylistRepository.list());
     // Executa so na montagem: e a hidratacao do trabalho salvo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -357,44 +355,28 @@ export default function App() {
     song.setEvents([]);
   }, [player, song]);
 
+  // "Meus exemplos" e playlist (no localStorage ou no perfil da nuvem) vem do
+  // useLibrary; aqui so ligamos as acoes aos avisos da tela.
+  const { saveCustom, addToPlaylist } = library;
+
   const handleSaveCurrent = useCallback(() => {
     if (song.events.length === 0) return;
-    localSongRepository.save(songName, song.events);
-    setCustomSongs(localSongRepository.list());
+    saveCustom(songName, song.events);
     setToast(`"${songName}" foi salva em Meus exemplos.`);
-  }, [song.events, songName]);
+  }, [saveCustom, song.events, songName]);
 
-  const handleDeleteCustom = useCallback((id: string) => {
-    localSongRepository.remove(id);
-    setCustomSongs(localSongRepository.list());
-  }, []);
-
-  // ---- Playlist ----------------------------------------------------------
-  const handleAddToPlaylist = useCallback((events: SongEvent[], name: string) => {
-    if (events.length === 0) return;
-    const { updated } = localPlaylistRepository.add(name, events);
-    setPlaylist(localPlaylistRepository.list());
-    setToast(
-      updated
-        ? `"${name}" já estava na playlist e foi atualizada.`
-        : `"${name}" foi adicionada à playlist.`,
-    );
-  }, []);
-
-  const handlePlaylistRename = useCallback((id: string, name: string) => {
-    localPlaylistRepository.rename(id, name);
-    setPlaylist(localPlaylistRepository.list());
-  }, []);
-
-  const handlePlaylistMove = useCallback((id: string, direction: -1 | 1) => {
-    localPlaylistRepository.move(id, direction);
-    setPlaylist(localPlaylistRepository.list());
-  }, []);
-
-  const handlePlaylistRemove = useCallback((id: string) => {
-    localPlaylistRepository.remove(id);
-    setPlaylist(localPlaylistRepository.list());
-  }, []);
+  const handleAddToPlaylist = useCallback(
+    (events: SongEvent[], name: string) => {
+      if (events.length === 0) return;
+      const updated = addToPlaylist(name, events);
+      setToast(
+        updated
+          ? `"${name}" já estava na playlist e foi atualizada.`
+          : `"${name}" foi adicionada à playlist.`,
+      );
+    },
+    [addToPlaylist],
+  );
 
   const openFullCode = useCallback((mode: ExportMode) => {
     setExportMode(mode);
@@ -449,6 +431,13 @@ export default function App() {
         </div>
 
         <nav className="header-actions" aria-label="Ações principais">
+          <ProfileField
+            value={library.nameInput}
+            onChange={library.setNameInput}
+            profileName={library.profileName}
+            status={library.cloudStatus}
+            error={library.cloudError}
+          />
           <button type="button" className="btn btn-small" onClick={() => setOpenModal('examples')}>
             Exemplos
           </button>
@@ -623,7 +612,7 @@ export default function App() {
         hasCurrentSong={song.events.length > 0}
         onLoad={loadSong}
         onSaveCurrent={handleSaveCurrent}
-        onDeleteCustom={handleDeleteCustom}
+        onDeleteCustom={library.removeCustom}
         onAddToPlaylist={handleAddToPlaylist}
       />
 
@@ -635,9 +624,9 @@ export default function App() {
         hasCurrentSong={song.events.length > 0}
         onAddCurrent={() => handleAddToPlaylist(song.events, songName.trim() || DEFAULT_SONG_NAME)}
         onLoad={loadSong}
-        onRename={handlePlaylistRename}
-        onMove={handlePlaylistMove}
-        onRemove={handlePlaylistRemove}
+        onRename={library.renameInPlaylist}
+        onMove={library.moveInPlaylist}
+        onRemove={library.removeFromPlaylist}
         onExport={() => openFullCode('playlist')}
       />
 

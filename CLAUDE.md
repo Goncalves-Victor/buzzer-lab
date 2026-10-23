@@ -52,8 +52,9 @@ prefira a solução mais simples.
 - CSS puro (sem framework)
 - Web Audio API
 
-Sem dependências além de React/Vite/TypeScript. Não adicione bibliotecas de
-áudio, de estado ou de UI sem necessidade real.
+Única dependência extra: **`firebase`** (perfis na nuvem, ver seção 22),
+carregada sob demanda. Não adicione bibliotecas de áudio, de estado ou de UI
+sem necessidade real.
 
 ## 5. Comandos
 
@@ -105,8 +106,10 @@ src/
 │
 ├── data/                dados e persistência
 │   ├── examples.ts      melodias prontas
-│   ├── customSongs.ts   "Meus exemplos" (SongRepository)
-│   ├── playlist.ts      a playlist (PlaylistRepository; a ORDEM importa)
+│   ├── songLists.ts     operações PURAS nas listas de músicas (valem local e nuvem)
+│   ├── customSongs.ts   "Meus exemplos" no localStorage (SongRepository)
+│   ├── playlist.ts      a playlist no localStorage (a ORDEM importa)
+│   ├── cloudSync.ts     perfis no Firebase, SÓ em buzzerlab_perfis/<nome>
 │   ├── storage.ts       localStorage com prefixo buzzerlab.
 │   ├── settings.ts      preferências
 │   ├── helpTexts.ts     textos didáticos
@@ -119,7 +122,8 @@ src/
 │
 ├── state/
 │   ├── useHistory.ts    undo/redo genérico por snapshots
-│   └── useSong.ts       estado central da música
+│   ├── useSong.ts       estado central da música
+│   └── useLibrary.ts    músicas salvas + playlist + perfil (local ou nuvem)
 │
 ├── App.tsx              apenas coordenação
 ├── main.tsx
@@ -245,7 +249,13 @@ Acrescente um item em `EXAMPLES`, em `data/examples.ts`:
 A notação compacta (`NOTA:duração_ms`, `REST:duração_ms`) existe só para o
 arquivo ficar legível; `scoreToEvents()` converte em `SongEvent[]` normal.
 
-Use apenas melodias de domínio público ou sequências didáticas.
+A regra original era usar só melodias de domínio público ou sequências
+didáticas. **O dono do projeto decidiu incluir também melodias conhecidas de
+jogos, filmes e toques de celular** (Mario, Megalovania, Tetris, Nokia...),
+convertidas das tabelas de frequência dele; mantenha as próximas na mesma linha
+só se ele pedir. Ao converter frequências em notas, confira que
+`round(frequência da nota)` volta ao número original (a exportação é
+inteira): a Megalovania tem um `261 Hz` que sai `262`, diferença de 1 Hz.
 
 ## 15. Importação e exportação
 
@@ -290,14 +300,15 @@ dois projetos podem coexistir no mesmo domínio.
 | `buzzerlab.settings`     | preferências                 |
 | `buzzerlab.customSongs`  | "Meus exemplos"              |
 | `buzzerlab.playlist`     | playlist (`StoredSong[]` em ordem) |
+| `buzzerlab.profileName`  | nome do perfil (vazio = sem perfil) |
 
 O salvamento é automático; atualizar a página não pode apagar a música.
 `sanitizeEvents()` valida o que vem do storage — JSON corrompido é descartado,
 não derruba o app.
 
-"Meus exemplos" passa por `SongRepository` (`data/customSongs.ts`).
-**Sincronização na nuvem deve ser uma nova implementação dessa interface**, sem
-reescrever o editor. Não use Firebase sem pedido explícito.
+"Meus exemplos" e a playlist ficam no localStorage **só quando não há perfil**
+(`SongRepository` / `PlaylistRepository` só sabem `list()` e `replaceAll()`).
+Com perfil, vão para a nuvem — ver seção 22.
 
 ## 17. Cuidados obrigatórios com áudio e eventos
 
@@ -507,7 +518,65 @@ clique duplo, segurar, trepidação, parar tocando, tempo de cada nota (±3 ms),
 fim da música, textos dentro da tela e OLED ausente. **Não** foi testado em
 placa real nem com as bibliotecas Adafruit de verdade.
 
-## 22. Prioridades
+## 22. Perfis na nuvem (nome = gaveta)
+
+Igual ao OLED Lab: o aluno digita o nome em "Seu nome..." (cabeçalho) e passa
+a ver as **mesmas músicas salvas e a mesma playlist em qualquer computador**.
+O nome é a chave de acesso; **não há senha** (quem digitar o mesmo nome vê e
+altera os mesmos dados).
+
+### ISOLAMENTO NO FIREBASE (regra de ouro)
+
+O projeto Firebase (`educarino-45cc8`) é **compartilhado** com outras
+aplicações do dono (bloco de notas em `documentos/`, OLED Lab em
+`oledlab_exemplos/`), cada uma no seu caminho. O Buzzer Lab usa **apenas
+`buzzerlab_perfis/<nome>`**:
+
+- todo acesso passa por `pathFor()` em `data/cloudSync.ts`; **não crie outro
+  caminho** nem leia/escreva em nó mais alto que um perfil;
+- `pathFor()` **recusa nome vazio**: a chave vazia apontaria para
+  `buzzerlab_perfis/` inteiro e um `set()` apagaria todos os perfis;
+- `sanitizeProfileName()` tira `. # $ [ ] /` e caracteres de controle, para o
+  nome nunca escapar do prefixo;
+- as credenciais são chaves de **cliente** (não são segredo).
+
+**As regras do banco precisam liberar o caminho.** Sem isso o app mostra
+"❌ Erro ao sincronizar" (tooltip: `permission_denied`), mantém tudo local e não
+perde nada. Regra sugerida, **acrescentada ao lado das existentes** (não
+substitua as regras inteiras): liberar `buzzerlab_perfis/$perfil` com
+`.read`/`.write`. Usar `$perfil` (e não `.read` no `buzzerlab_perfis`) impede
+listar todos os perfis: só acessa quem sabe o nome.
+
+### Como funciona (`state/useLibrary.ts`)
+
+- O que vai para o perfil: **"Meus exemplos"** (`exemplos`) e a **playlist**
+  (`playlist`). A música em edição NÃO vai (continua no `buzzerlab.song`).
+- **Sem nome:** listas no localStorage, como sempre.
+  **Com nome:** listas na nuvem; o localStorage genérico **não é tocado** (por
+  isso o backup de quem usa sem nome nunca é sobrescrito pela lista de um
+  perfil). Só ações do usuário SEM perfil gravam o backup local.
+- **Nome novo** (nada salvo) começa **vazio**: não herda a lista local, senão
+  puxaria músicas de outra pessoa. As músicas locais continuam intactas e
+  voltam ao apagar o nome.
+- Nome com dados substitui as listas pelo que está na nuvem, em **tempo real**
+  (`onValue`). O nome é confirmado após 600 ms sem digitar.
+- **Só envia depois da primeira leitura** (`cloudReadyRef`): o Firebase apaga o
+  nó ao receber listas vazias; gravar o estado vazio inicial apagaria o que
+  estava salvo.
+- Envio com pausa de 600 ms; `lastSyncedRef` (comparando JSON) evita o loop de
+  eco (gravar → o próprio listener reage → regravar). O JSON depende da **ordem
+  fixa das chaves** montada em `sanitizeStoredSongs()` e `songLists.ts`; não
+  reordene.
+- Os dados que chegam da nuvem passam por `sanitizeStoredSongs()` (aceita
+  array ou objeto de chaves numéricas, que é como o Firebase devolve listas).
+- Duas pessoas editando o mesmo nome ao mesmo tempo: vale o último que salvar.
+- O SDK é carregado por `import()` dinâmico: quem não usa perfil não baixa o
+  Firebase.
+- Os handlers de `App.tsx` só chamam o `useLibrary` e mostram avisos. As
+  operações em si (`addCustomSong`, `addToPlaylist`, `moveSong`...) são funções
+  puras em `data/songLists.ts`, as mesmas para o modo local e o da nuvem.
+
+## 23. Prioridades
 
 1. funcionamento correto + simplicidade + fidelidade ao buzzer;
 2. experiência de edição;

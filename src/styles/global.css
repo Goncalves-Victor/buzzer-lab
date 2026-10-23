@@ -118,6 +118,47 @@ button {
   flex-wrap: wrap;
 }
 
+/* ---------- Perfil (nome = gaveta na nuvem) ---------- */
+.profile-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.profile-input {
+  width: 150px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 11px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.profile-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.profile-input::placeholder {
+  color: var(--muted);
+}
+
+.cloud-status {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.cloud-status-saved {
+  color: var(--accent-2);
+}
+
+.cloud-status-error {
+  color: var(--rec);
+}
+
 /* ---------- Nome da musica ---------- */
 .song-bar {
   display: flex;
