@@ -19,6 +19,8 @@ interface ExamplePanelProps {
   onLoad: (events: SongEvent[], name: string) => void;
   onSaveCurrent: () => void;
   onDeleteCustom: (id: string) => void;
+  /** Guarda uma copia da musica na playlist sem precisar abri-la antes. */
+  onAddToPlaylist: (events: SongEvent[], name: string) => void;
 }
 
 export function ExamplePanel({
@@ -29,6 +31,7 @@ export function ExamplePanel({
   onLoad,
   onSaveCurrent,
   onDeleteCustom,
+  onAddToPlaylist,
 }: ExamplePanelProps) {
   return (
     <Modal
@@ -61,16 +64,26 @@ export function ExamplePanel({
                   {events.length} passos · {formatSeconds(totalDuration(events))}
                 </span>
               </div>
-              <button
-                type="button"
-                className="btn btn-small"
-                onClick={() => {
-                  onLoad(events, example.name);
-                  onClose();
-                }}
-              >
-                Abrir
-              </button>
+              <div className="example-actions">
+                <button
+                  type="button"
+                  className="btn btn-small"
+                  onClick={() => onAddToPlaylist(events, example.name)}
+                  title="Adicionar à playlist"
+                >
+                  ＋ Playlist
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-small"
+                  onClick={() => {
+                    onLoad(events, example.name);
+                    onClose();
+                  }}
+                >
+                  Abrir
+                </button>
+              </div>
             </li>
           );
         })}
@@ -93,6 +106,14 @@ export function ExamplePanel({
                 </span>
               </div>
               <div className="example-actions">
+                <button
+                  type="button"
+                  className="btn btn-small"
+                  onClick={() => onAddToPlaylist(song.events, song.name)}
+                  title="Adicionar à playlist"
+                >
+                  ＋ Playlist
+                </button>
                 <button
                   type="button"
                   className="btn btn-small"

@@ -20,6 +20,7 @@ import type { SongEvent, StoredSong } from './music/songTypes';
 import { createRestEvent, sanitizeEvents } from './music/songUtils';
 
 import { localSongRepository } from './data/customSongs';
+import { localPlaylistRepository } from './data/playlist';
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from './data/settings';
 import type { Settings } from './data/settings';
 import { STORAGE_KEYS, readJson, writeJson } from './data/storage';
@@ -29,11 +30,13 @@ import { useSong } from './state/useSong';
 import { CodePanel } from './components/CodePanel';
 import { ExamplePanel } from './components/ExamplePanel';
 import { ExportModal } from './components/ExportModal';
+import type { ExportMode } from './components/ExportModal';
 import { HelpPanel } from './components/HelpPanel';
 import { ImportModal } from './components/ImportModal';
 import { NoteEditor } from './components/NoteEditor';
 import { Piano } from './components/Piano';
 import { PianoRoll } from './components/PianoRoll';
+import { PlaylistModal } from './components/PlaylistModal';
 import { QuantizeModal } from './components/QuantizeModal';
 import { SettingsModal } from './components/SettingsModal';
 import { Timeline } from './components/Timeline';
@@ -41,7 +44,15 @@ import { TransportControls } from './components/TransportControls';
 
 const DEFAULT_SONG_NAME = 'Minha música';
 
-type ModalName = 'examples' | 'import' | 'export' | 'settings' | 'help' | 'quantize' | null;
+type ModalName =
+  | 'examples'
+  | 'import'
+  | 'export'
+  | 'settings'
+  | 'help'
+  | 'quantize'
+  | 'playlist'
+  | null;
 
 export default function App() {
   const song = useSong([]);
@@ -60,6 +71,8 @@ export default function App() {
 
   const [metronomeOn, setMetronomeOn] = useState(false);
   const [customSongs, setCustomSongs] = useState<StoredSong[]>([]);
+  const [playlist, setPlaylist] = useState<StoredSong[]>([]);
+  const [exportMode, setExportMode] = useState<ExportMode>('song');
   const [toast, setToast] = useState<string | null>(null);
 
   // ---- Objetos de audio: criados uma vez por montagem ---------------------
@@ -103,6 +116,7 @@ export default function App() {
     if (typeof storedName === 'string' && storedName.trim()) setSongName(storedName);
 
     setCustomSongs(localSongRepository.list());
+    setPlaylist(localPlaylistRepository.list());
     // Executa so na montagem: e a hidratacao do trabalho salvo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -355,6 +369,38 @@ export default function App() {
     setCustomSongs(localSongRepository.list());
   }, []);
 
+  // ---- Playlist ----------------------------------------------------------
+  const handleAddToPlaylist = useCallback((events: SongEvent[], name: string) => {
+    if (events.length === 0) return;
+    const { updated } = localPlaylistRepository.add(name, events);
+    setPlaylist(localPlaylistRepository.list());
+    setToast(
+      updated
+        ? `"${name}" já estava na playlist e foi atualizada.`
+        : `"${name}" foi adicionada à playlist.`,
+    );
+  }, []);
+
+  const handlePlaylistRename = useCallback((id: string, name: string) => {
+    localPlaylistRepository.rename(id, name);
+    setPlaylist(localPlaylistRepository.list());
+  }, []);
+
+  const handlePlaylistMove = useCallback((id: string, direction: -1 | 1) => {
+    localPlaylistRepository.move(id, direction);
+    setPlaylist(localPlaylistRepository.list());
+  }, []);
+
+  const handlePlaylistRemove = useCallback((id: string) => {
+    localPlaylistRepository.remove(id);
+    setPlaylist(localPlaylistRepository.list());
+  }, []);
+
+  const openFullCode = useCallback((mode: ExportMode) => {
+    setExportMode(mode);
+    setOpenModal('export');
+  }, []);
+
   const handleImport = useCallback(
     (events: SongEvent[], suggestedName: string) => {
       player.stop();
@@ -406,6 +452,9 @@ export default function App() {
           <button type="button" className="btn btn-small" onClick={() => setOpenModal('examples')}>
             Exemplos
           </button>
+          <button type="button" className="btn btn-small" onClick={() => setOpenModal('playlist')}>
+            Playlist ({playlist.length})
+          </button>
           <button type="button" className="btn btn-small" onClick={() => setOpenModal('import')}>
             Importar
           </button>
@@ -433,6 +482,15 @@ export default function App() {
             placeholder={DEFAULT_SONG_NAME}
           />
         </label>
+        <button
+          type="button"
+          className="btn btn-small"
+          onClick={() => handleAddToPlaylist(song.events, songName.trim() || DEFAULT_SONG_NAME)}
+          disabled={song.events.length === 0}
+          title="Guarda uma cópia desta música na playlist do ESP32"
+        >
+          ＋ Playlist
+        </button>
       </div>
 
       <main className="layout">
@@ -540,7 +598,7 @@ export default function App() {
           <CodePanel
             events={song.events}
             songName={songName}
-            onOpenFullCode={() => setOpenModal('export')}
+            onOpenFullCode={() => openFullCode('song')}
           />
         </div>
       </main>
@@ -566,6 +624,21 @@ export default function App() {
         onLoad={loadSong}
         onSaveCurrent={handleSaveCurrent}
         onDeleteCustom={handleDeleteCustom}
+        onAddToPlaylist={handleAddToPlaylist}
+      />
+
+      <PlaylistModal
+        open={openModal === 'playlist'}
+        onClose={() => setOpenModal(null)}
+        playlist={playlist}
+        currentName={songName}
+        hasCurrentSong={song.events.length > 0}
+        onAddCurrent={() => handleAddToPlaylist(song.events, songName.trim() || DEFAULT_SONG_NAME)}
+        onLoad={loadSong}
+        onRename={handlePlaylistRename}
+        onMove={handlePlaylistMove}
+        onRemove={handlePlaylistRemove}
+        onExport={() => openFullCode('playlist')}
       />
 
       <ImportModal
@@ -579,8 +652,11 @@ export default function App() {
         onClose={() => setOpenModal(null)}
         events={song.events}
         songName={songName}
-        buzzerPin={settings.buzzerPin}
-        onBuzzerPinChange={(pin) => updateSettings({ buzzerPin: pin })}
+        playlist={playlist}
+        mode={exportMode}
+        onModeChange={setExportMode}
+        settings={settings}
+        onSettingsChange={updateSettings}
       />
 
       <SettingsModal

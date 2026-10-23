@@ -78,6 +78,7 @@ src/
 │   ├── Timeline.tsx
 │   ├── TimelineEvent.tsx
 │   ├── PianoRoll.tsx    modo "Grade": segunda forma de editar o mesmo SongEvent[]
+│   ├── PlaylistModal.tsx lista, ordem e nomes das músicas que vão juntas para o ESP32
 │   ├── NoteEditor.tsx
 │   ├── CodePanel.tsx
 │   ├── ImportModal.tsx
@@ -105,10 +106,12 @@ src/
 ├── data/                dados e persistência
 │   ├── examples.ts      melodias prontas
 │   ├── customSongs.ts   "Meus exemplos" (SongRepository)
+│   ├── playlist.ts      a playlist (PlaylistRepository; a ORDEM importa)
 │   ├── storage.ts       localStorage com prefixo buzzerlab.
 │   ├── settings.ts      preferências
 │   ├── helpTexts.ts     textos didáticos
-│   └── buildIno.ts      montagem do sketch .ino completo
+│   ├── buildIno.ts      montagem do sketch .ino de UMA música
+│   └── buildPlaylistIno.ts  sketch .ino da playlist (OLED + botão, ESP32-C3)
 │
 ├── export/
 │   ├── codeGenerator.ts SongEvent[] → vetores C++
@@ -286,6 +289,7 @@ dois projetos podem coexistir no mesmo domínio.
 | `buzzerlab.songName`     | nome da música               |
 | `buzzerlab.settings`     | preferências                 |
 | `buzzerlab.customSongs`  | "Meus exemplos"              |
+| `buzzerlab.playlist`     | playlist (`StoredSong[]` em ordem) |
 
 O salvamento é automático; atualizar a página não pode apagar a música.
 `sanitizeEvents()` valida o que vem do storage — JSON corrompido é descartado,
@@ -419,7 +423,91 @@ música": a duração continua sendo simplesmente a soma dos eventos, calculada
 onde já era (`songUtils.totalDuration`), a mesma conta que a Timeline e o
 `CodePanel` usam.
 
-## 21. Prioridades
+## 21. Playlist e sketch do ESP32-C3 (OLED + botão)
+
+O aluno monta uma **playlist** e exporta **um único `.ino`** com todas as
+músicas, um menu no OLED e navegação por um botão só.
+
+### Fluxo e estado
+
+- "＋ Playlist" (ao lado do nome da música, em cada item de "Exemplos" e no
+  rodapé do `PlaylistModal`) guarda uma **cópia** da música. Se já existe uma
+  com o mesmo nome (sem diferenciar maiúsculas), ela é **atualizada no mesmo
+  lugar**, não duplicada — assim "editar e adicionar de novo" funciona.
+- A playlist vive em `data/playlist.ts` (`PlaylistRepository`; como em
+  `customSongs.ts`, nuvem seria uma nova implementação da interface).
+  **Diferente de "Meus exemplos", a ordem é a do array** (vira a ordem do menu);
+  nunca ordene por data. `sanitize()` passa os eventos por `sanitizeEvents()` e
+  descarta músicas vazias.
+- `PlaylistModal` renomeia com **rascunho local** gravado ao sair do campo: se
+  gravasse a cada letra, `cleanName` cortaria o espaço final e não daria para
+  digitar "Harry P".
+- `ExportModal` tem a alternância "Música atual / Playlist (N)".
+  `App.tsx` guarda `exportMode`: "Ver código completo" abre em `song`,
+  "Exportar playlist" abre em `playlist`.
+- Novas preferências em `settings.ts`, com a ligação real do aluno como
+  padrão: buzzer **7** (`DEFAULT_BUZZER_PIN`), `buttonPin` **10**, `oledSda`
+  **5**, `oledScl` **6**, `oledHeight` (64 ou 32). (O I2C padrão do ESP32-C3
+  SuperMini seria 8/9, mas não é o que o aluno usa.) Como as preferências ficam
+  no `localStorage`, `loadSettings()` migra quem ainda estava com os pinos
+  antigos (5/4/8/9, ou ausentes) para os novos; quem escolheu qualquer outro
+  pino mantém a escolha. `findPinConflicts()` avisa quando dois itens usam o
+  mesmo pino.
+
+### Geração do código (`export/codeGenerator.ts` + `data/buildPlaylistIno.ts`)
+
+`generatePlaylist()` devolve os vetores `xN`/`xT` de cada música e a tabela
+`const Musica MUSICAS[] = { { "Nome", xN, xT, (int)TAM(xN) }, ... };` com as
+colunas alinhadas. Regras:
+
+- identificadores únicos: "Café" e "Cafe" dariam o mesmo `cafeN`; o repetido
+  vira `cafe2N` (senão o sketch não compila);
+- `toOledText()` tira acentos e caracteres não-ASCII (a fonte padrão da
+  Adafruit_GFX só tem ASCII) e troca `"` e `\` (quebrariam a string C++); o
+  nome é cortado em `PLAYLIST_NAME_MAX` (20 = cabe em 1 linha do OLED). O
+  `PlaylistModal` mostra "no OLED: ..." quando o nome muda.
+
+### O sketch gerado (decisões que NÃO devem ser "limpas" sem ler)
+
+- **Sem `delay()`**: máquina de estados com `millis()`, senão o botão não
+  responderia enquanto a música toca. `inicioPasso += duracao` (e não `=
+  millis()`) para não acumular atraso, e o `while` de avanço de passo recupera
+  o tempo se o loop atrasar (desenhar no OLED leva alguns ms).
+- **Som pelo LEDC** (`ledcWriteTone`), com `#if ESP_ARDUINO_VERSION_MAJOR >= 3`
+  escolhendo a API do core 3 (`ledcAttach(pino…)`) ou a do core 2
+  (`ledcSetup` + `ledcAttachPin`), porque `tone()` não existe em todo core
+  ESP32. Os últimos 8 ms de cada nota ficam em silêncio (`SEPARACAO_NOTAS`)
+  para notas iguais seguidas não virarem uma só, como o player do app faz.
+- **Um botão, pino com `INPUT_PULLUP`** (outro lado no GND, sem resistor):
+  1 clique = próxima, 2 cliques = anterior, segurar (600 ms) = tocar; tocando,
+  qualquer toque para. Com `aceitaDuplo = false` (enquanto toca) o clique sai
+  na hora, sem esperar a janela do clique duplo.
+- **Nenhuma assinatura de função usa `enum`/`struct` do sketch** (`lerBotao`
+  devolve `int`): o Arduino IDE gera os prototypes ANTES dos tipos do sketch e
+  isso não compilaria.
+- `Wire.begin(sda, scl)` antes de `display.begin()` (a Adafruit chama
+  `Wire.begin()` de novo e o ESP32 reaproveita os pinos). Se o OLED não for
+  encontrado, `oledOk = false` e o som e o botão continuam funcionando.
+- **Tela deliberadamente enxuta** (o aluno pediu menos poluição visual): parado
+  mostra só "1/3" no canto, o **nome grande** no meio e a dica fixa "segure:
+  tocar"; tocando troca a dica pela barra de progresso e acende um triângulo de
+  "play" no canto. Sem textos de estado, sem relógio, sem dicas rotativas. Não
+  reintroduza esses elementos sem pedido.
+- O OLED só é redesenhado quando algo muda (parado: só ao trocar de música ou
+  estado; tocando: só quando a barra anda) e no máximo a cada 250 ms tocando:
+  `display.display()` bloqueia no I2C e atrasaria as notas.
+- Comentários do sketch **sem acentos** (como em `buildIno.ts`).
+
+### Como foi testado
+
+Sem hardware, o sketch gerado foi **compilado com `g++ -Wall -Wextra`** contra
+stubs de `Arduino.h`/`Wire.h`/`Adafruit_SSD1306.h`, nos dois cores (2 e 3) e
+nas duas alturas (64 e 32), e executado com tempo e botão simulados: clique,
+clique duplo, segurar, trepidação, parar tocando, tempo de cada nota (±3 ms),
+fim da música, textos dentro da tela e OLED ausente. **Não** foi testado em
+placa real nem com as bibliotecas Adafruit de verdade.
+
+## 22. Prioridades
 
 1. funcionamento correto + simplicidade + fidelidade ao buzzer;
 2. experiência de edição;

@@ -16,7 +16,7 @@ export interface InoOptions {
   loopPauseMs: number;
 }
 
-export const DEFAULT_BUZZER_PIN = 5;
+export const DEFAULT_BUZZER_PIN = 7;
 export const DEFAULT_LOOP_PAUSE_MS = 2000;
 
 /** Nome de arquivo seguro: 'Mega Man' -> 'mega_man.ino'. */

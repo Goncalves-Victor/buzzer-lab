@@ -96,6 +96,107 @@ export function generateArrays(events: SongEvent[], songName: string): Generated
   return { notes, durations, notesName, durationsName, code };
 }
 
+// --------------------------------------------------------------------------
+// Playlist: varias musicas + a tabela MUSICAS[] usada pelo menu do OLED
+// --------------------------------------------------------------------------
+
+/**
+ * Texto seguro para o OLED e para uma string C++. A fonte padrao da
+ * Adafruit_GFX so tem ASCII (acento vira simbolo estranho na tela) e aspas ou
+ * barra invertida quebrariam a string do codigo.
+ */
+export function toOledText(name: string, maxLength: number): string {
+  const clean = name
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/"/g, "'")
+    .replace(/\\/g, '/')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return clean.slice(0, maxLength).trim();
+}
+
+export interface PlaylistEntry {
+  /** Nome como aparece no OLED e na tabela. */
+  displayName: string;
+  notesName: string;
+  durationsName: string;
+  notes: number[];
+  durations: number[];
+  totalMs: number;
+}
+
+export interface GeneratedPlaylist {
+  entries: PlaylistEntry[];
+  /** Todos os vetores N/T, um bloco por musica, separados por linha em branco. */
+  arraysCode: string;
+  /** O `const Musica MUSICAS[] = { ... };` */
+  tableCode: string;
+  totalMs: number;
+}
+
+export function generatePlaylist(
+  songs: { name: string; events: SongEvent[] }[],
+  nameMaxLength: number,
+): GeneratedPlaylist {
+  const usedBases = new Set<string>();
+  const entries: PlaylistEntry[] = [];
+  const blocks: string[] = [];
+
+  songs.forEach((song, index) => {
+    // Duas musicas com nomes parecidos ("Cafe" e "Café") dariam o mesmo
+    // identificador e o sketch nao compilaria: o repetido ganha um numero.
+    const base = toIdentifier(song.name);
+    let unique = base;
+    for (let n = 2; usedBases.has(unique); n++) unique = `${base}${n}`;
+    usedBases.add(unique);
+
+    const arrays = generateArrays(song.events, unique);
+    const displayName = toOledText(song.name, nameMaxLength) || `Musica ${index + 1}`;
+    const totalMs = arrays.durations.reduce((sum, d) => sum + d, 0);
+
+    entries.push({
+      displayName,
+      notesName: arrays.notesName,
+      durationsName: arrays.durationsName,
+      notes: arrays.notes,
+      durations: arrays.durations,
+      totalMs,
+    });
+    blocks.push(`// ${index + 1}. ${displayName} (${arrays.notes.length} passos, ${formatSeconds(totalMs)})\n${arrays.code}`);
+  });
+
+  return {
+    entries,
+    arraysCode: blocks.join('\n\n'),
+    tableCode: formatTable(entries),
+    totalMs: entries.reduce((sum, e) => sum + e.totalMs, 0),
+  };
+}
+
+/** Monta a tabela com as colunas alinhadas, para a leitura ficar tranquila. */
+function formatTable(entries: PlaylistEntry[]): string {
+  const rows = entries.map((e) => ({
+    name: `"${e.displayName}",`,
+    notes: `${e.notesName},`,
+    durations: `${e.durationsName},`,
+    size: `(int)TAM(${e.notesName})`,
+  }));
+  const width = (pick: (r: (typeof rows)[number]) => string) =>
+    rows.reduce((max, r) => Math.max(max, pick(r).length), 0);
+  const wName = width((r) => r.name);
+  const wNotes = width((r) => r.notes);
+  const wDur = width((r) => r.durations);
+  const wSize = width((r) => r.size);
+
+  const lines = rows.map((r, i) => {
+    const comma = i === rows.length - 1 ? '' : ',';
+    return `  { ${r.name.padEnd(wName)} ${r.notes.padEnd(wNotes)} ${r.durations.padEnd(wDur)} ${r.size.padEnd(wSize)} }${comma}`;
+  });
+  return `const Musica MUSICAS[] = {\n${lines.join('\n')}\n};`;
+}
+
 export function songStats(events: SongEvent[]): SongStats {
   const totalMs = totalDuration(events);
   return {

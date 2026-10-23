@@ -17,6 +17,7 @@ export const STORAGE_KEYS = {
   songName: `${PREFIX}songName`,
   settings: `${PREFIX}settings`,
   customSongs: `${PREFIX}customSongs`,
+  playlist: `${PREFIX}playlist`,
 } as const;
 
 export function readJson<T>(key: string, fallback: T): T {
